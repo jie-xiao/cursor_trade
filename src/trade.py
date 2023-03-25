@@ -4,20 +4,22 @@ import time
 import akshare as ak
 import pandas as pd
 import threading
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 
-def get_stock_info(stock_code,q):
+def get_stock_info(stock_code,q,p):
     try:
-
-        stock_zh_a_hist_df,b=ak.stock_zh_a_hist(symbol=stock_code,period="weekly",adjust="hfq")#, start_date='20211010', end_date='20230322')
+        stock_zh_a_hist_df,b=ak.stock_zh_a_hist(symbol=stock_code,period="daily",adjust="hfq")#, start_date='20211010', end_date='20230322')
     except Exception as e:
         q.acquire()
-        print(stock_code+" error to get")
+        print(stock_code+str(e)+" error to get")
         q.release()
         return 0
     if not "ST" in b and not stock_zh_a_hist_df.empty:
         # 计算均线
         ma5 = stock_zh_a_hist_df['收盘'].rolling(20).mean() # 20周均线
-        ma10 = stock_zh_a_hist_df['收盘'].rolling(40).mean() # 40周均线
+        ma10 = stock_zh_a_hist_df['收盘'].rolling(60).mean() # 40周均线
         ma20 = stock_zh_a_hist_df['收盘'].rolling(100).mean() # 100周均线
         # 计算均线差分
         ma5_diff = ma5.diff()
@@ -56,28 +58,63 @@ def get_stock_info(stock_code,q):
             mean_all=stock_zh_a_hist_df.iloc[last_ma_diff_sign_sum_diff_sign_shift_diff_index:]
             # 判断成交量是否大于等于5周的平均成交量的两倍
 
-            if stock_zh_a_hist_df.iloc[-5:]['成交量'].mean()>2*mean_all['成交量'].mean():
+            if stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>5*mean_all['成交量'].mean() and stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>stock_zh_a_hist_df.iloc[-5:]['成交量'].mean(0):
                 if stock_zh_a_hist_df.iloc[-5:]['收盘'].mean()<((mean_all['收盘'].mean()-min(mean_all['收盘']))/10+min(mean_all['收盘'])):
                     q.acquire()
-                    print(b,len(mean_all['成交量']),stock_zh_a_hist_df.iloc[-5:]['成交量'].mean(),mean_all['成交量'].mean(),stock_zh_a_hist_df.iloc[-5:]['收盘'].mean(),min(mean_all['收盘']),max(mean_all['收盘']))
+                    p.put(b+str(len(mean_all['成交量']))+str(stock_zh_a_hist_df.iloc[-5:]['成交量'].mean())+str(mean_all['成交量'].mean())+str(stock_zh_a_hist_df.iloc[-5:]['收盘'].mean())+str(min(mean_all['收盘']))+str(max(mean_all['收盘'])))
                     q.release()
+# 发送邮件函数
+def send_email(content):
+    info=None
+    with open("password.txt","r") as f:
+        info=f.readlines()
+    
+    # 发件人邮箱
+    sender = info[0].strip()
+    # 收件人邮箱
+    receivers = [sender]
+    # 邮件主题
+    subject = '股票策略结果'
+    # 邮件正文
+    message = MIMEText(content, 'plain', 'utf-8')
+    message['From'] = Header("股票策略", 'utf-8')
+    message['To'] = Header("收件人", 'utf-8')
+    message['Subject'] = Header(subject, 'utf-8')
+    # 发送邮件
+    try:
+        smtpObj = smtplib.SMTP('smtp.qq.com')
+        smtpObj.login(sender, info[1])
+        smtpObj.sendmail(sender, receivers, message.as_string())
+        print("邮件发送成功")
+    except smtplib.SMTPException as e:
+        print("Error: 无法发送邮件 "+str(e))
+def get_stock():
+    # 获取所有 A 股股票代码
+    stock_zh_a_spot_em_df = ak.stock_zh_a_spot_em()
+    # 只保留代码列
+    stock_zh_a_spot_em_df = stock_zh_a_spot_em_df[['代码']]
+    # 筛选掉北交所、创业板、科创板、面临退市和已退市股票
+    stock_zh_a_spot_em_df = stock_zh_a_spot_em_df[stock_zh_a_spot_em_df['代码'].str.startswith(("600","601","603","605","000","002","003"))]
 
-# 获取所有 A 股股票代码
-stock_zh_a_spot_em_df = ak.stock_zh_a_spot_em()
-# 只保留代码列
-stock_zh_a_spot_em_df = stock_zh_a_spot_em_df[['代码']]
-# 遍历所有股票代码
-threads = []
-stock_zh_a_hist_df = pd.DataFrame()
-stock_code_list=[]
-q = threading.Lock()
-print("股票名称","此周期长度","近五周成交量","此周期成交量","近五周价格","此周期最低价格","此周期最高价格")
-for i in range(0, len(stock_zh_a_spot_em_df['代码']), 10):
-    for stock_code in stock_zh_a_spot_em_df['代码'][i:i+10]:
-        t = threading.Thread(target=get_stock_info, args=(stock_code, q))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
-    time.sleep(1)
-
+    # 遍历所有股票代码
+    threads = []
+    stock_zh_a_hist_df = pd.DataFrame()
+    stock_code_list=[]
+    q = threading.Lock()
+    p=queue.Queue()
+    content = "股票名称,此周期长度,近五日成交量,此周期成交量,近五日价格,此周期最低价格,此周期最高价格\n"
+    for i in range(0, len(stock_zh_a_spot_em_df['代码']), 10):
+        for stock_code in stock_zh_a_spot_em_df['代码'][i:i+10]:
+            t = threading.Thread(target=get_stock_info, args=(stock_code, q,p))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+        while not p.empty():
+            content+=p.get()
+        time.sleep(1)
+    return content
+# 发送邮件
+#content=get_stock()
+content="123"
+send_email(content)
