@@ -61,7 +61,7 @@ def get_stock_info(stock_code,q,p):
             if stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>5*mean_all['成交量'].mean() and stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>stock_zh_a_hist_df.iloc[-5:]['成交量'].mean(0):
                 if stock_zh_a_hist_df.iloc[-5:]['收盘'].mean()<((mean_all['收盘'].mean()-min(mean_all['收盘']))/10+min(mean_all['收盘'])):
                     q.acquire()
-                    p.put(b+str(len(mean_all['成交量']))+str(stock_zh_a_hist_df.iloc[-5:]['成交量'].mean())+str(mean_all['成交量'].mean())+str(stock_zh_a_hist_df.iloc[-5:]['收盘'].mean())+str(min(mean_all['收盘']))+str(max(mean_all['收盘'])))
+                    p.put(b+str(len(mean_all['成交量']))+str(stock_zh_a_hist_df.iloc[-5:]['成交量'].mean())+str(mean_all['成交量'].mean())+str(stock_zh_a_hist_df.iloc[-5:]['收盘'].mean())+str(min(mean_all['收盘']))+str(max(mean_all['收盘']))+"\n")
                     q.release()
 # 发送邮件函数
 def send_email(content):
@@ -98,8 +98,8 @@ def get_stock():
 
     # 遍历所有股票代码
     threads = []
-    stock_zh_a_hist_df = pd.DataFrame()
-    stock_code_list=[]
+    # stock_zh_a_hist_df = pd.DataFrame()
+    # stock_code_list=[]
     q = threading.Lock()
     p=queue.Queue()
     content = "股票名称,此周期长度,近五日成交量,此周期成交量,近五日价格,此周期最低价格,此周期最高价格\n"
@@ -114,7 +114,8 @@ def get_stock():
             content+=p.get()
         time.sleep(1)
     return content
-# 发送邮件
-#content=get_stock()
-content="123"
-send_email(content)
+
+content=get_stock()
+if len(content.split("\n"))>1:
+    send_email(content)
+
