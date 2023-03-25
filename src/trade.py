@@ -8,15 +8,18 @@ import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
 
-def get_stock_info(stock_code,q,p):
+def get_stock_info(stock_code,q,p,coefficient,seq,last_trading_day):
     try:
         stock_zh_a_hist_df,b=ak.stock_zh_a_hist(symbol=stock_code,period="daily",adjust="hfq")#, start_date='20211010', end_date='20230322')
     except Exception as e:
         q.acquire()
         print(stock_code+str(e)+" error to get")
         q.release()
+        seq.release()
         return 0
-    if not "ST" in b and not stock_zh_a_hist_df.empty:
+    
+
+    if not "ST" in b and not stock_zh_a_hist_df.empty and stock_zh_a_hist_df.iloc[-1]["日期"]==last_trading_day:
         # 计算均线
         ma5 = stock_zh_a_hist_df['收盘'].rolling(20).mean() # 20周均线
         ma10 = stock_zh_a_hist_df['收盘'].rolling(60).mean() # 40周均线
@@ -57,12 +60,13 @@ def get_stock_info(stock_code,q,p):
             last_ma_diff_sign_sum_diff_sign_shift_diff_index = last_ma_diff_sign_sum_diff_sign_shift_diff_index - 1
             mean_all=stock_zh_a_hist_df.iloc[last_ma_diff_sign_sum_diff_sign_shift_diff_index:]
             # 判断成交量是否大于等于5周的平均成交量的两倍
-
-            if stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>5*mean_all['成交量'].mean() and stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>stock_zh_a_hist_df.iloc[-5:]['成交量'].mean(0):
-                if stock_zh_a_hist_df.iloc[-5:]['收盘'].mean()<((mean_all['收盘'].mean()-min(mean_all['收盘']))/10+min(mean_all['收盘'])):
-                    q.acquire()
-                    p.put(b+str(len(mean_all['成交量']))+str(stock_zh_a_hist_df.iloc[-5:]['成交量'].mean())+str(mean_all['成交量'].mean())+str(stock_zh_a_hist_df.iloc[-5:]['收盘'].mean())+str(min(mean_all['收盘']))+str(max(mean_all['收盘']))+"\n")
-                    q.release()
+            while coefficient>=1:
+                if stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>coefficient*mean_all['成交量'].mean() and stock_zh_a_hist_df.iloc[-1:]['成交量'].mean()>stock_zh_a_hist_df.iloc[-5:]['成交量'].mean():
+                    if stock_zh_a_hist_df.iloc[-5:]['收盘'].mean()<((mean_all['收盘'].mean()-min(mean_all['收盘']))/10+min(mean_all['收盘'])):
+                        p.put(b+str(len(mean_all['成交量']))+"\t"+str(stock_zh_a_hist_df.iloc[-5:]['成交量'].mean())+"\t"+str(mean_all['成交量'].mean())+"\t"+str(stock_zh_a_hist_df.iloc[-5:]['收盘'].mean())+"\t"+str(min(mean_all['收盘']))+"\t"+str(max(mean_all['收盘']))+"\t"+str(coefficient)+"\n")
+                        break    
+                coefficient-=1
+    seq.release()
 # 发送邮件函数
 def send_email(content):
     info=None
@@ -82,13 +86,17 @@ def send_email(content):
     message['Subject'] = Header(subject, 'utf-8')
     # 发送邮件
     try:
-        smtpObj = smtplib.SMTP('smtp.qq.com')
+        smtpObj = smtplib.SMTP_SSL('smtp.qq.com',465)
+        smtpObj.ehlo()
         smtpObj.login(sender, info[1])
         smtpObj.sendmail(sender, receivers, message.as_string())
         print("邮件发送成功")
     except smtplib.SMTPException as e:
         print("Error: 无法发送邮件 "+str(e))
-def get_stock():
+def get_stock(coefficient):
+    # 获取A股上一交易日日期
+    x=ak.stock_zh_a_daily(symbol="sh000001")
+    last_trading_day = x.iloc[-1]["date"].strftime("%Y-%m-%d")
     # 获取所有 A 股股票代码
     stock_zh_a_spot_em_df = ak.stock_zh_a_spot_em()
     # 只保留代码列
@@ -101,21 +109,21 @@ def get_stock():
     # stock_zh_a_hist_df = pd.DataFrame()
     # stock_code_list=[]
     q = threading.Lock()
+    seq=threading.Semaphore(50)
     p=queue.Queue()
-    content = "股票名称,此周期长度,近五日成交量,此周期成交量,近五日价格,此周期最低价格,此周期最高价格\n"
-    for i in range(0, len(stock_zh_a_spot_em_df['代码']), 10):
-        for stock_code in stock_zh_a_spot_em_df['代码'][i:i+10]:
-            t = threading.Thread(target=get_stock_info, args=(stock_code, q,p))
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
-        while not p.empty():
-            content+=p.get()
-        time.sleep(1)
+    content = "股票名称,此周期长度,近五日成交量,此周期成交量,近五日价格,此周期最低价格,此周期最高价格,当前系数\n"
+    for stock_code in stock_zh_a_spot_em_df['代码']:
+        t = threading.Thread(target=get_stock_info, args=(stock_code, q,p,coefficient,seq,last_trading_day))
+        seq.acquire()
+        t.start()
+        while seq._value<=5:
+            time.sleep(1)
+    while not p.empty():
+        content+=p.get()
     return content
-
-content=get_stock()
-if len(content.split("\n"))>1:
+coefficient=4
+content=get_stock(coefficient)
+if len(content.split("\n"))>2 :
     send_email(content)
+
 
